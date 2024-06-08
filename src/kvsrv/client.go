@@ -1,15 +1,21 @@
 package kvsrv
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
 
+	"6.5840/labrpc"
+)
+
+// Each client talks to the server through a Clerk with Put/Append/Get methods. A Clerk manages RPC interactions with the server.
+// clerk与client关系可以理解为，client调用clerk与server沟通，clerk相当于一个包，调用clerk里面的函数，就能与server沟通，每个client各自调用各自的clerk
 
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
 }
 
+// 这里提供这个rand的意义，其实就是让你用它作为版本号，因为这是一个很大的范围内进行随机，所以相同的概率小的可怜
 func nrand() int64 {
 	max := big.NewInt(int64(1) << 62)
 	bigx, _ := rand.Int(rand.Reader, max)
@@ -37,7 +43,19 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	args := GetArgs{}
+	reply := GetReply{}
+	args.Key = key
+
+	for {
+		ok := ck.server.Call("KVServer.Get", &args, &reply)
+		if ok {
+			// fmt.Println("Get error")
+			break
+		}
+	}
+
+	return reply.Value
 }
 
 // shared by Put and Append.
@@ -50,7 +68,20 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
-	return ""
+
+	args := PutAppendArgs{}
+	reply := PutAppendReply{}
+	args.Key = key
+	args.Value = value
+	args.Version = nrand()
+	for {
+		ok := ck.server.Call("KVServer."+op, &args, &reply)
+		if ok {
+			// fmt.Println(op + " error")
+			break
+		}
+	}
+	return reply.Value
 }
 
 func (ck *Clerk) Put(key string, value string) {

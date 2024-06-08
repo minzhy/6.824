@@ -5,6 +5,18 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Launch test function",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "/home/minzhy/6.5840/src/kvsrv/test_test.go",
+            "dlvFlags": ["--check-go-version=false"],
+            "args": [
+                "-test.run",
+                "TestMemAppend2"
+            ]
+        },
+        {
             "name": "Launch file",
             "type": "go",
             
