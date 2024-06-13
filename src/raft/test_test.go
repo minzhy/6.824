@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -36,13 +38,15 @@ func TestInitialElection3A(t *testing.T) {
 	if term1 < 1 {
 		t.Fatalf("term is %v, but should be at least 1", term1)
 	}
+	fmt.Println("first")
 
 	// does the leader+term stay the same if there is no network failure?
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
-		fmt.Printf("warning: term changed even though there were no failures")
+		fmt.Printf("warning: term changed even though there were no failures term1:%v term2:%v\n", term1, term2)
 	}
+	fmt.Println("second")
 
 	// there should still be a leader.
 	cfg.checkOneLeader()
@@ -60,7 +64,7 @@ func TestReElection3A(t *testing.T) {
 	leader1 := cfg.checkOneLeader()
 
 	// if the leader disconnects, a new one should be elected.
-	cfg.disconnect(leader1)
+	cfg.disconnect(leader1) // disconnect 不是kill了！只是联系不上了
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
