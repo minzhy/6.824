@@ -468,6 +468,7 @@ func TestRejoin3B(t *testing.T) {
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
+	fmt.Println("disconnect leader1")
 
 	// make old leader try to agree on some entries
 	cfg.rafts[leader1].Start(102)
@@ -480,19 +481,25 @@ func TestRejoin3B(t *testing.T) {
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+	fmt.Println("disconnect leader2")
 
 	// old leader connected again
 	cfg.connect(leader1)
+	fmt.Println("recover leader1")
 
 	cfg.one(104, 2, true)
 
 	// all together now
 	cfg.connect(leader2)
+	fmt.Println("recover leader2")
 
 	cfg.one(105, servers, true)
 
 	cfg.end()
 }
+
+// 如果用心跳完成一致性检查，这里就不容易通过，因为心跳的速度太慢了，会超时
+var test_num int = 50
 
 func TestBackup3B(t *testing.T) {
 	servers := 5
@@ -505,16 +512,18 @@ func TestBackup3B(t *testing.T) {
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
+	fmt.Println("leader1:", leader1)
 	cfg.disconnect((leader1 + 2) % servers)
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
 
 	// submit lots of commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < test_num; i++ {
 		cfg.rafts[leader1].Start(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
+	fmt.Println("first submited lots of commands that won't commit.")
 
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
@@ -525,24 +534,28 @@ func TestBackup3B(t *testing.T) {
 	cfg.connect((leader1 + 4) % servers)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < test_num; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
+	fmt.Println("second lots of successful commands to new group")
 
 	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
+	fmt.Println("leader2:", leader2)
 	other := (leader1 + 2) % servers
 	if leader2 == other {
 		other = (leader2 + 1) % servers
 	}
+	fmt.Println("other:", other)
 	cfg.disconnect(other)
 
 	// lots more commands that won't commit
-	for i := 0; i < 50; i++ {
+	for i := 0; i < test_num; i++ {
 		cfg.rafts[leader2].Start(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
+	fmt.Println("third lots more commands that won't commit")
 
 	// bring original leader back to life,
 	for i := 0; i < servers; i++ {
@@ -551,11 +564,13 @@ func TestBackup3B(t *testing.T) {
 	cfg.connect((leader1 + 0) % servers)
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
+	fmt.Println("bring original leader back to life", leader1, (leader1+1)%servers, other)
 
 	// lots of successful commands to new group.
-	for i := 0; i < 50; i++ {
+	for i := 0; i < test_num; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
+	fmt.Println("forth lots of successful commands to new group")
 
 	// now everyone
 	for i := 0; i < servers; i++ {
@@ -623,6 +638,7 @@ loop:
 				t.Fatalf("Start() failed")
 			}
 		}
+		fmt.Println("first")
 
 		for i := 1; i < iters+1; i++ {
 			cmd := cfg.wait(starti+i, servers, term)
@@ -634,6 +650,7 @@ loop:
 				t.Fatalf("wrong value %v committed for index %v; expected %v\n", cmd, starti+i, cmds)
 			}
 		}
+		fmt.Println("second")
 
 		failed := false
 		total2 = 0
@@ -645,6 +662,7 @@ loop:
 			}
 			total2 += cfg.rpcCount(j)
 		}
+		fmt.Println("third")
 
 		if failed {
 			continue loop

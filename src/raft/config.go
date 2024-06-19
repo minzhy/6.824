@@ -580,6 +580,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 		}
 
+		nd := 0
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
@@ -596,7 +597,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				time.Sleep(20 * time.Millisecond)
 			}
 			if retry == false {
-				cfg.t.Fatalf("one(%v) failed to reach agreement", cmd)
+				cfg.t.Fatalf("one(%v) failed to reach agreement,nd:%v,index:%v", cmd, nd, index)
 			}
 		} else {
 			time.Sleep(50 * time.Millisecond)
