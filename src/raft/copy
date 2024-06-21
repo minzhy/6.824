@@ -1,3 +1,4 @@
+
 package raft
 
 //
@@ -23,7 +24,6 @@ import (
 	"bytes"
 	"math/rand"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,8 +66,7 @@ const (
 var consistent_checkTime time.Duration = 5 * time.Millisecond
 var heartBeatTime time.Duration = 150 * time.Millisecond
 var checkLeaderTime time.Duration = 400 * time.Millisecond
-var waitTime time.Duration = 2 * time.Millisecond // 两个RPC请求之间的间隔
-var voteWaitTime time.Duration = 10 * time.Millisecond
+var waitTime time.Duration = 30 * time.Millisecond // 两个RPC请求之间的间隔
 var sendRequestVoteChannel = make(chan bool)
 var heartBeatChannel = make(chan bool)
 
@@ -282,7 +281,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if term < rf.CurrentTerm {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
-		DPrintf("peer:%v deny vote to %v term:%v, term < rf.currentTerm", rf.me, candidateId, term)
 		return
 	} else if term > rf.CurrentTerm {
 		// term 增加了重新获得投票资格
@@ -295,12 +293,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.Term = rf.CurrentTerm
 			reply.VoteFollowerId = int64(rf.me)
 			reply.VoteGranted = true
-			DPrintf("peer:%v vote to %v term:%v, update term", rf.me, candidateId, term)
 		} else {
 			rf.VotedFor = -1
 			reply.Term = rf.CurrentTerm
 			reply.VoteFollowerId = int64(rf.me)
-			DPrintf("peer:%v deny vote to %v term:%v, last log index and term", rf.me, candidateId, term)
 			reply.VoteGranted = false
 		}
 		rf.persist()
@@ -315,18 +311,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				reply.Term = rf.CurrentTerm
 				reply.VoteFollowerId = int64(rf.me)
 				reply.VoteGranted = true
-				DPrintf("peer:%v vote to %v term:%v, not update term", rf.me, candidateId, term)
 			} else {
 				rf.VotedFor = -1
 				reply.Term = rf.CurrentTerm
 				reply.VoteFollowerId = int64(rf.me)
 				reply.VoteGranted = false
-				DPrintf("peer:%v deny vote to %v term:%v, last log index and term", rf.me, candidateId, term)
 			}
 		} else {
 			reply.Term = rf.CurrentTerm
 			reply.VoteGranted = false
-			DPrintf("peer:%v deny vote to %v term:%v, already vote", rf.me, candidateId, term)
 		}
 		rf.persist()
 		rf.voteForMu.Unlock()
@@ -361,27 +354,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, requestVoteChan chan struct {
-	ok   bool
-	peer int64
-	r    RequestVoteReply
-}) bool {
-	// timeout := time.NewTimer(waitTime)
-	// ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	// select {
-	// case <-timeout.C:
-	// 	timeout.Stop()
-	// default:
-	// 	timeout.Stop()
-	// 	sendRequestVoteChannel <- ok
-	// }
-	// return ok
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	timeout := time.NewTimer(waitTime)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	requestVoteChan <- struct {
-		ok   bool
-		peer int64
-		r    RequestVoteReply
-	}{ok, int64(server), *reply}
+	select {
+	case <-timeout.C:
+		timeout.Stop()
+	default:
+		timeout.Stop()
+		sendRequestVoteChannel <- ok
+	}
 	return ok
 }
 
@@ -458,13 +440,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 					break
 				}
 
-				DPrintf("[Start]::leaderId:%v peer:%v log idx:%v log term:%v", rf.me, idx, aea.LogEntries.Index, aea.LogEntries.Term)
+				DPrintf("[Start]::leaderId:%v peer:%v retry log idx:%v log term:%v", rf.me, idx, aea.LogEntries.Index, aea.LogEntries.Term)
 				if ok := rf.sendAppendEntries(idx, &aea, &aep, nil); !ok {
 					// 只有网络差，follower crash和follower慢才重传
 					time.Sleep(10 * time.Millisecond)
-					DPrintf("[Start]::leaderId:%v peer:%v retry log idx:%v log term:%v", rf.me, idx, aea.LogEntries.Index, aea.LogEntries.Term)
 					// continue
-					break
 				} else {
 					DPrintf("[Start]::leaderId:%v peer:%v log idx:%v reply:%v XIndex:%v XTerm:%v", rf.me, idx, aea.LogEntries.Index, aep.Success, aep.XIndex, aep.XTerm)
 					if aep.Term > rf.CurrentTerm {
@@ -516,7 +496,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 						rf.IndexMu.Unlock()
 						// rf.initMatchIndex[idx] = true
 					}
-					DPrintf("[Start]::peer:%v matchIndex:%v nextIndex:%v", idx, rf.matchIndex[idx], rf.nextIndex[idx])
+					DPrintf("[consistent_check]::peer:%v matchIndex:%v nextIndex:%v", idx, rf.matchIndex[idx], rf.nextIndex[idx])
 					break
 				}
 			}
@@ -637,17 +617,6 @@ func (rf *Raft) ticker() {
 			rf.voteForMu.Unlock()
 
 			DPrintf("[ticker]::start elect leader:%v term:%v, leaderAlive%v", rf.me, voteTerm, rf.leaderAlive)
-
-			var requestVoteChan chan struct {
-				ok   bool
-				peer int64
-				r    RequestVoteReply
-			}
-			requestVoteChan = make(chan struct {
-				ok   bool
-				peer int64
-				r    RequestVoteReply
-			}, len(rf.peers)-1)
 			// sendRequestVote
 			for id := range rf.peers {
 				if id == rf.me {
@@ -665,69 +634,33 @@ func (rf *Raft) ticker() {
 					rva.LastLogTerm = rf.log[len(rf.log)-1].Term
 				}
 
-				// timeout := time.NewTimer(voteWaitTime) //timer和ticker区别在于，ticker是循环，但是timer是只记录一次时间，而不是每次时间过后，需要reset重新设置时间
+				timeout := time.NewTimer(waitTime) //timer和ticker区别在于，ticker是循环，但是timer是只记录一次时间，而不是每次时间过后，需要reset重新设置时间
 
-				go rf.sendRequestVote(id, &rva, &rvr, requestVoteChan)
+				go rf.sendRequestVote(id, &rva, &rvr)
 
-				// var ok bool
-				// select {
-				// case <-timeout.C:
-				// 	timeout.Stop()
-				// 	DPrintf("[ticker]::candidate:%v request follower:%v time break", rf.me, id)
-				// 	continue //这里continue是全跳了for后面的语句吗？
-				// case ok = <-sendRequestVoteChannel:
-				// 	timeout.Stop()
-				// }
+				var ok bool
+				select {
+				case <-timeout.C:
+					timeout.Stop()
+					continue //这里continue是全跳了for后面的语句吗？
+				case ok = <-sendRequestVoteChannel:
+					timeout.Stop()
+				}
 
-				// if !ok {
-				// 	DPrintf("[ticker]::candidate:%v request follower:%v ok:%v", rf.me, id, ok)
-				// 	continue
-				// }
-				// term := rvr.Term
-				// if term <= voteTerm && rvr.VoteGranted {
-				// 	rf.collectVotes += 1
-				// 	DPrintf("[ticker]::peer:%v vote 1 to %v in voteTerm:%v", id, rf.me, voteTerm)
-				// 	// fmt.Println("me", rvr.VoteFollowerId, "vote", rf.me, "in term", rf.CurrentTerm)
-				// } else if term > voteTerm {
-				// 	if term > rf.CurrentTerm {
-				// 		rf.voteForMu.Lock()
-				// 		rf.CurrentTerm = term
-				// 		rf.findLeader = -1
-				// 		rf.VotedFor = -1
-				// 		rf.voteForMu.Unlock()
-				// 	}
-				// 	rf.collectVotes = 0
-				// 	rf.serverState = follower
-				// 	goto EndVote
-				// }
-			}
-			var set map[int64]bool = make(map[int64]bool)
-			for out := range requestVoteChan {
-				set[out.peer] = true
-				if out.ok {
-					term := out.r.Term
-					if term <= voteTerm && out.r.VoteGranted {
-						rf.collectVotes += 1
-						DPrintf("[ticker]::peer:%v vote 1 to %v in voteTerm:%v", out.peer, rf.me, voteTerm)
-						// fmt.Println("me", rvr.VoteFollowerId, "vote", rf.me, "in term", rf.CurrentTerm)
-					} else if term > voteTerm {
-						if term > rf.CurrentTerm {
-							rf.voteForMu.Lock()
-							rf.CurrentTerm = term
-							rf.findLeader = -1
-							rf.VotedFor = -1
-							rf.voteForMu.Unlock()
-						}
-						rf.collectVotes = 0
-						rf.serverState = follower
-						goto EndVote
-					}
-					if rf.collectVotes >= int64(rf.majorityNum) || len(set) == len(rf.peers)-1 {
-						break
-					}
+				if !ok {
+					continue
+				}
+				term := rvr.Term
+				if term <= voteTerm && rvr.VoteGranted {
+					rf.collectVotes += 1
+					// fmt.Println("me", rvr.VoteFollowerId, "vote", rf.me, "in term", rf.CurrentTerm)
+				} else if term > voteTerm {
+					rf.collectVotes = 0
+					rf.serverState = follower
+					goto EndVote
 				}
 			}
-			DPrintf("[ticker]::me:%v collectVotes:%v voteTerm:%v", rf.me, rf.collectVotes, voteTerm)
+			DPrintf("[ticker]::me:%v collectVotes:%v", rf.me, rf.collectVotes)
 			// win election
 			// 想要成为leader，必须得经过win election，所以，只有这里能让一个server成为leader！
 			if rf.collectVotes >= int64(rf.majorityNum) {
@@ -758,7 +691,6 @@ func (rf *Raft) ticker() {
 					rf.nextIndex[idx] = int64(len(rf.log)) + 1
 					DPrintf("leader:%v nextIndex[%v]=%v", rf.me, idx, rf.nextIndex[idx])
 				}
-				rf.Start("minzhy" + strconv.Itoa(int(rf.CurrentTerm)))
 			} else {
 				rf.serverState = follower
 			}
@@ -766,10 +698,6 @@ func (rf *Raft) ticker() {
 			// DPrintf("[ticker]::vote collection vote:%v", rf.collectVotes, "me", rf.me, "term", voteTerm)
 			// clear state
 			rf.collectVotes = 0
-		}
-		// 看看log里面都是什么，为什么选不出leader
-		if id := len(rf.log) - 1; id != -1 {
-			DPrintf("peer:%v log.cmd:%v log.index:%v log.term:%v", rf.me, rf.log[id].Log, rf.log[id].Index, rf.log[id].Term)
 		}
 
 		// pause for a random amount of time between 50 and 350
@@ -840,14 +768,14 @@ func (rf *Raft) start_heartbeat(voteTerm int64) {
 }
 
 func (rf *Raft) check_leader() {
-	for rf.killed() == false {
+	for {
 		// rf == killed?
 		if rf.serverState == leader {
 			rf.leaderAlive = 2
 			rf.findLeader = rf.me
 			continue
 		}
-		DPrintf("[check_leader]::serverState:%v,leaderAlive:%v,me:%v,findLeader:%v kill:%v", rf.serverState, rf.leaderAlive, rf.me, rf.findLeader, rf.killed())
+		DPrintf("[check_leader]::serverState:%v,leaderAlive:%v,me:%v", rf.serverState, rf.leaderAlive, rf.me)
 		rf.leaderAlive = rf.leaderAlive - 1 // 这个地方不能直接bool型，得用一个2，1，0的变量，因为这里直接false了，上面就又重新开始选举leader了！term就变了
 		if rf.leaderAlive < 0 {
 			rf.findLeader = -1
@@ -978,6 +906,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = term
 
 	rf.commitMu.Lock()
+	defer rf.commitMu.Unlock()
 	if LogEntries.Term == -1 && LogEntries.Index == -1 {
 		// 心跳是空的，所以这里可以直接reply success
 		reply.Success = true
@@ -992,7 +921,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// rf.commitMu.Unlock()
 			reply.XIndex = int64(len(rf.log))
 			reply.XTerm = -1
-			rf.commitMu.Unlock()
 			return
 		}
 
@@ -1025,7 +953,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				for id := range rf.log {
 					if rf.log[id].Term == reply.XTerm {
 						reply.XIndex = rf.log[id].Index
-						rf.commitMu.Unlock()
 						return
 					}
 				}
@@ -1060,7 +987,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persist()
 	}
 	// reply.AppliedIndex = rf.lastApplied
-	rf.commitMu.Unlock()
+	// rf.commitMu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, CC chan bool) bool {

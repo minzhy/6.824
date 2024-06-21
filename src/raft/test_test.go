@@ -835,6 +835,7 @@ func TestFigure83C(t *testing.T) {
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
+		fmt.Println("iter:", iters)
 		leader := -1
 		for i := 0; i < servers; i++ {
 			if cfg.rafts[i] != nil {
@@ -890,6 +891,7 @@ func TestUnreliableAgree3C(t *testing.T) {
 	var wg sync.WaitGroup
 
 	for iters := 1; iters < 50; iters++ {
+		fmt.Println("iters:", iters)
 		for j := 0; j < 4; j++ {
 			wg.Add(1)
 			go func(iters, j int) {
@@ -930,6 +932,7 @@ func TestFigure8Unreliable3C(t *testing.T) {
 				leader = i
 			}
 		}
+		fmt.Println("iters:", iters, "leader:", leader)
 
 		if (rand.Int() % 1000) < 100 {
 			ms := rand.Int63() % (int64(RaftElectionTimeout/time.Millisecond) / 2)
@@ -941,6 +944,7 @@ func TestFigure8Unreliable3C(t *testing.T) {
 
 		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
 			cfg.disconnect(leader)
+			fmt.Println("diconnect leader", leader)
 			nup -= 1
 		}
 
@@ -959,7 +963,9 @@ func TestFigure8Unreliable3C(t *testing.T) {
 		}
 	}
 
-	cfg.one(rand.Int()%10000, servers, true)
+	cmt := rand.Int() % 10000
+	fmt.Println("last one", cmt)
+	cfg.one(cmt, servers, true)
 
 	cfg.end()
 }
@@ -1117,6 +1123,7 @@ func TestUnreliableChurn3C(t *testing.T) {
 	internalChurn(t, true)
 }
 
+// Lab 3D
 const MAXLOGSIZE = 2000
 
 func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash bool) {
