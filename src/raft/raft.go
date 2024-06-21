@@ -328,7 +328,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 	// 	}
 	// 	rf.nextIndex[idx] = int64(log_idx) + 1
 	// }
-	DPrintf("[Start]::leader:%v log_entry.log:%v term:%v idx:%v", rf.me, command, rf.CurrentTerm, log_idx)
+	// DPrintf("[Start]::leader:%v log_entry.log:%v term:%v idx:%v", rf.me, command, rf.CurrentTerm, log_idx)
 	rf.leaderLogMu.Unlock()
 
 	// 发送给其他peers
@@ -365,10 +365,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 				if ok := rf.sendAppendEntries(idx, &aea, &aep); !ok {
 					// 只有网络差，follower crash和follower慢才重传
 					time.Sleep(10 * time.Millisecond)
-					DPrintf("[Start]::leaderId:%v retry log idx:%v log term:%v", rf.me, aea.LogEntries.Index, aea.LogEntries.Term)
+					// DPrintf("[Start]::leaderId:%v retry log idx:%v log term:%v", rf.me, aea.LogEntries.Index, aea.LogEntries.Term)
 					continue
 				} else {
-					DPrintf("[Start]::leaderId:%v log idx:%v reply:%v", rf.me, aea.LogEntries.Index, aep.Success)
+					// DPrintf("[Start]::leaderId:%v log idx:%v reply:%v", rf.me, aea.LogEntries.Index, aep.Success)
 					if aep.Term > rf.CurrentTerm {
 						// 有可能leader disconnect了，当他终于连上外面的server，发现自己的term过期了
 						rf.serverState = follower
@@ -448,7 +448,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 					apply_msg.Command = rf.log[i-1].Log
 					apply_msg.CommandIndex = int(rf.log[i-1].Index)
 					rf.apply_msg <- apply_msg
-					DPrintf("[Start]::Leader:%v commit idx:%v cmd:%v", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
+					// DPrintf("[Start]::Leader:%v commit idx:%v cmd:%v", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
 				}
 				rf.lastApplied = rf.commitIndex
 			}
@@ -509,9 +509,10 @@ func (rf *Raft) ticker() {
 			// atomic.AddInt64(&rf.collectVotes, 1)
 			rf.collectVotes = 1
 			// DPrintf("[ticker]::me:%v vote:%v term:%v", rf.me, rf.me, rf.CurrentTerm)
+			Debug(dTimer, "S%d Leader, checking heartbeats", rf.me)
 			rf.voteForMu.Unlock()
 
-			DPrintf("[ticker]::start elect leader:%v term:%v, leaderAlive%v", rf.me, voteTerm, rf.leaderAlive)
+			// DPrintf("[ticker]::start elect leader:%v term:%v, leaderAlive%v", rf.me, voteTerm, rf.leaderAlive)
 			// sendRequestVote
 			for id := range rf.peers {
 				if id == rf.me {
@@ -555,14 +556,14 @@ func (rf *Raft) ticker() {
 					goto EndVote
 				}
 			}
-			DPrintf("[ticker]::me:%v collectVotes:%v", rf.me, rf.collectVotes)
+			// DPrintf("[ticker]::me:%v collectVotes:%v", rf.me, rf.collectVotes)
 			// win election
 			// 想要成为leader，必须得经过win election，所以，只有这里能让一个server成为leader！
 			if rf.collectVotes >= int64(rf.majorityNum) {
 				// heartbeat
 				// 当选的是voteTerm的leader
 				go rf.start_heartbeat(voteTerm)
-				DPrintf("[ticker]::leader:%v,collection vote:%v,term:%v", rf.me, rf.collectVotes, voteTerm)
+				// DPrintf("[ticker]::leader:%v,collection vote:%v,term:%v", rf.me, rf.collectVotes, voteTerm)
 				rf.serverState = leader
 				rf.leaderAlive = 2
 				rf.findLeader = rf.me
@@ -628,12 +629,12 @@ func (rf *Raft) start_heartbeat(voteTerm int64) {
 				select {
 				case <-timeout.C:
 					timeout.Stop()
-					DPrintf("[start_heartbeat]::time out. leader:%v follower%v", rf.me, id)
+					// DPrintf("[start_heartbeat]::time out. leader:%v follower%v", rf.me, id)
 					continue //这里continue是全跳了for后面的语句吗？select是没有continue的，所以是按照for的逻辑走的
 				case ok = <-heartBeatChannel:
 					timeout.Stop()
 				}
-				DPrintf("[start_heartbeat]::leader:%v follower:%v ok:%v success:%v applied:%v", rf.me, id, ok, aep.Success, aep.AppliedIndex)
+				// DPrintf("[start_heartbeat]::leader:%v follower:%v ok:%v success:%v applied:%v", rf.me, id, ok, aep.Success, aep.AppliedIndex)
 				if ok {
 					if rf.matchIndex[id] < aep.AppliedIndex {
 						rf.matchIndex[id] = aep.AppliedIndex
@@ -669,7 +670,7 @@ func (rf *Raft) check_leader() {
 			rf.findLeader = rf.me
 			continue
 		}
-		DPrintf("[check_leader]::serverState:%v,leaderAlive:%v,me:%v", rf.serverState, rf.leaderAlive, rf.me)
+		// DPrintf("[check_leader]::serverState:%v,leaderAlive:%v,me:%v", rf.serverState, rf.leaderAlive, rf.me)
 		rf.leaderAlive = rf.leaderAlive - 1 // 这个地方不能直接bool型，得用一个2，1，0的变量，因为这里直接false了，上面就又重新开始选举leader了！term就变了
 		if rf.leaderAlive <= 0 {
 			rf.findLeader = -1
@@ -772,7 +773,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if MatchIdx == 0 {
 		MatchIdx = rf.lastApplied
 	}
-	DPrintf("[AppendEntries]::me%v term%v currentTerm:%v lastApplied:%v commitIndex:%v LeaderCommit:%v MatchIdx:%v LogIndex:%v", rf.me, term, rf.CurrentTerm, rf.lastApplied, rf.commitIndex, LeaderCommit, MatchIdx, LogEntries.Index)
+	// DPrintf("[AppendEntries]::me%v term%v currentTerm:%v lastApplied:%v commitIndex:%v LeaderCommit:%v MatchIdx:%v LogIndex:%v", rf.me, term, rf.CurrentTerm, rf.lastApplied, rf.commitIndex, LeaderCommit, MatchIdx, LogEntries.Index)
 	rf.commitMu.Lock()
 	peer_log_idx := len(rf.log)
 
@@ -855,7 +856,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			apply_msg.Command = rf.log[i-1].Log
 			apply_msg.CommandIndex = int(rf.log[i-1].Index)
 			rf.apply_msg <- apply_msg
-			DPrintf("[AppendEntries]::follower:%v execute log entry idx:%v command%v commitIndex:%v", rf.me, int(rf.log[i-1].Index), apply_msg.Command, rf.commitIndex)
+			// DPrintf("[AppendEntries]::follower:%v execute log entry idx:%v command%v commitIndex:%v", rf.me, int(rf.log[i-1].Index), apply_msg.Command, rf.commitIndex)
 		}
 		rf.lastApplied = rf.commitIndex
 	}
@@ -896,7 +897,7 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 			break
 		} else {
 			if index == 0 {
-				DPrintf("[consistent_check]::index error rf.matchIndex[peer]:%v rf.commitIndex:%v len(rf.log):%v", rf.matchIndex[peer], rf.commitIndex, len(rf.log))
+				// DPrintf("[consistent_check]::index error rf.matchIndex[peer]:%v rf.commitIndex:%v len(rf.log):%v", rf.matchIndex[peer], rf.commitIndex, len(rf.log))
 			}
 			aea.LogEntries = rf.log[index-1]
 			if index == 1 {
@@ -912,7 +913,7 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 		rf.leaderLogMu.Unlock()
 		// timeout := time.NewTimer(waitTime * 2)
 		// var consistent_check_channel chan bool
-		DPrintf("[consistent_check]::leader:%v send follower:%v Log.Index:%v", rf.me, peer, aea.LogEntries.Index)
+		// DPrintf("[consistent_check]::leader:%v send follower:%v Log.Index:%v", rf.me, peer, aea.LogEntries.Index)
 
 		ok := rf.sendAppendEntries(int(peer), &aea, &aep)
 
@@ -926,7 +927,7 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 		// }
 		if ok {
 			if aep.Term > voteTerm {
-				DPrintf("[consistent_check]::term change,aep.Term:%v voteTerm:%v", aep.Term, voteTerm)
+				// DPrintf("[consistent_check]::term change,aep.Term:%v voteTerm:%v", aep.Term, voteTerm)
 				rf.serverState = follower
 				break
 			}
@@ -960,9 +961,9 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 					min_match_idx = rf.matchIndex[idx]
 				}
 			}
-			DPrintf("[consistent_check]::min_match_idx:%v", min_match_idx)
+			// DPrintf("[consistent_check]::min_match_idx:%v", min_match_idx)
 			if min_match_idx != 0 {
-				DPrintf("[consistent_check]::min log.term:%v rf.currentterm:%v", rf.log[min_match_idx-1].Term, rf.CurrentTerm)
+				// DPrintf("[consistent_check]::min log.term:%v rf.currentterm:%v", rf.log[min_match_idx-1].Term, rf.CurrentTerm)
 			}
 			if min_match_idx > rf.commitIndex && rf.log[min_match_idx-1].Term == rf.CurrentTerm {
 				// commitIndex 变大之后，要执行command才行
@@ -974,7 +975,7 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 						apply_msg.Command = rf.log[i-1].Log
 						apply_msg.CommandIndex = int(rf.log[i-1].Index)
 						rf.apply_msg <- apply_msg
-						DPrintf("[consistent_check]::Leader:%v idx:%v cmd:%v", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
+						// DPrintf("[consistent_check]::Leader:%v idx:%v cmd:%v", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
 					}
 					rf.lastApplied = rf.commitIndex
 				}
@@ -988,7 +989,7 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 			if idx == rf.me {
 				continue
 			}
-			DPrintf("[consistent_check]::leaderId:%v match_index:%v follow:%v", rf.me, rf.matchIndex[idx], idx)
+			// DPrintf("[consistent_check]::leaderId:%v match_index:%v follow:%v", rf.me, rf.matchIndex[idx], idx)
 		}
 		time.Sleep(consistent_checkTime)
 	}
