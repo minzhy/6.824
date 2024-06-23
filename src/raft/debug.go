@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var debug = 0
+var debug = 1
 
 type logTopic string
 
