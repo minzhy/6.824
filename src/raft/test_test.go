@@ -694,6 +694,8 @@ loop:
 	cfg.end()
 }
 
+// 这个测试集需要成为leader后，执行一个start命令，不然wait那里过不去
+// 如果leader是刚刚当上的leader，这个时候，进入consistent_check，
 func TestPersist13C(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
@@ -909,6 +911,10 @@ func TestUnreliableAgree3C(t *testing.T) {
 	cfg.end()
 }
 
+// tips: 当1开始elect leader的时候，不能允许其他server开始选举leader。
+// 这个例子中，只有一个server满足log的限制能够当选leader
+// 但是，由于每次能够当选的leader开始竞选leader的时候，总有其他server同时精选，导致能够当选的leader的server的term总不是最新的。
+// 最后选不出leader
 func TestFigure8Unreliable3C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
@@ -920,6 +926,7 @@ func TestFigure8Unreliable3C(t *testing.T) {
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
+		fmt.Println("iters:", iters)
 		if iters == 200 {
 			cfg.setlongreordering(true)
 		}
@@ -959,6 +966,8 @@ func TestFigure8Unreliable3C(t *testing.T) {
 		}
 	}
 
+	cmd := rand.Int() % 10000
+	fmt.Println("last one", cmd)
 	cfg.one(rand.Int()%10000, servers, true)
 
 	cfg.end()
