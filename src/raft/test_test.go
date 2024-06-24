@@ -926,7 +926,7 @@ func TestFigure8Unreliable3C(t *testing.T) {
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
-		fmt.Println("iters:", iters)
+		fmt.Println("001847 INFO iters:", iters)
 		if iters == 200 {
 			cfg.setlongreordering(true)
 		}
@@ -967,8 +967,8 @@ func TestFigure8Unreliable3C(t *testing.T) {
 	}
 
 	cmd := rand.Int() % 10000
-	fmt.Println("last one", cmd)
-	cfg.one(rand.Int()%10000, servers, true)
+	fmt.Println("001847 INFO last one", cmd)
+	cfg.one(cmd, servers, true)
 
 	cfg.end()
 }

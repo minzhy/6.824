@@ -64,10 +64,12 @@ const (
 	leader
 )
 
-var consistent_checkTime time.Duration = 5 * time.Millisecond
 var heartBeatTime time.Duration = 150 * time.Millisecond
-var checkLeaderTime time.Duration = 200 * time.Millisecond
-var waitTime time.Duration = 30 * time.Millisecond // 两个RPC请求之间的间隔
+var checkLeaderTime time.Duration = 300 * time.Millisecond
+var waitTimeVote time.Duration = 30 * time.Millisecond
+var waitTimeCheck time.Duration = 5 * time.Millisecond
+var waitTimeCommit time.Duration = 5 * time.Millisecond
+
 // var heartBeatChannel = make(chan bool)
 
 type LogEntry struct {
@@ -115,10 +117,10 @@ type Raft struct {
 	nextIndex []int64
 	// initMatchIndex []bool
 	matchIndex []int64
-	IndexMu    sync.Mutex
+	IndexMu    []sync.Mutex
 
 	// my add
-	collectVotes           int64
+	// collectVotes           int64 // 这个东西设置为临时变量就行了，为什么要设置成raft的变量呢，这样容易导致，不同voteterm的得票相加
 	findLeader             int
 	leaderAlive            int
 	majorityNum            int
@@ -383,7 +385,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 	aea := AppendEntriesArgs{}
 	aea.Term = rf.CurrentTerm
 	aea.LeaderId = int64(rf.me)
-	aea.LogEntries = log_entry
+	aea.LogEntries = make([]LogEntry, 0)
+	aea.LogEntries = append(aea.LogEntries, log_entry)
 	// aea.LeaderCommit = rf.commitIndex
 	if log_num == 0 {
 		aea.PrevLogIndex = -1
@@ -433,7 +436,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 					}
 					find_term := out.r.XTerm
 					var isfind bool = false
-					rf.IndexMu.Lock()
+					rf.IndexMu[idx].Lock()
 					for i := len(rf.log) - 1; i >= 0; i-- {
 						if find_term == rf.log[i].Term {
 							rf.nextIndex[idx] = int64(i + 1)
@@ -446,7 +449,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 					} else if isfind == false && out.r.XTerm != -1 {
 						rf.nextIndex[idx] = out.r.XIndex
 					}
-					rf.IndexMu.Unlock()
+					rf.IndexMu[idx].Unlock()
 					rf.consistent_checkMu.Lock()
 					if rf.isStartConsistentCheck[int64(idx)] == false {
 						go rf.consistent_check(int64(idx), aea.Term)
@@ -454,30 +457,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 					}
 					rf.consistent_checkMu.Unlock()
 				} else {
-					rf.IndexMu.Lock()
-					if rf.matchIndex[idx] < aea.LogEntries.Index {
-						rf.matchIndex[idx] = aea.LogEntries.Index
+					rf.IndexMu[idx].Lock()
+					if rf.matchIndex[idx] < aea.LogEntries[0].Index {
+						rf.matchIndex[idx] = aea.LogEntries[0].Index
 					}
 					rf.nextIndex[idx] = rf.matchIndex[idx] + 1
-					rf.IndexMu.Unlock()
+					rf.IndexMu[idx].Unlock()
 					success_num++
 				}
 			}
 			if success_num >= rf.majorityNum && !is_success {
 				if rf.commitIndex < int64(log_idx) {
 					rf.commitIndex = int64(log_idx)
-				}
-				if rf.commitIndex > rf.lastApplied {
-					for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-						apply_msg := ApplyMsg{}
-						apply_msg.CommandValid = true
-						apply_msg.Command = rf.log[i-1].Log
-						apply_msg.CommandIndex = int(rf.log[i-1].Index)
-						rf.apply_msg <- apply_msg
-						Debug(dCommit, "S%v leader commit idx:%v cmd:%v [Start]", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
-					}
-					rf.lastApplied = rf.commitIndex
-					rf.persist()
 				}
 				is_success = true
 			}
@@ -487,139 +478,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) { //(index,term,isle
 			}
 		}
 	}()
-
-	// 这个地方一定要传参进去，不然很多idx都是一样的，因为主协程算完后，idx就是一个固定的值
-	// 不断地send RPC
-	// go func(idx int, aea AppendEntriesArgs) {
-	// 	aea.MatchIdx = rf.matchIndex[idx]
-	// 	aea.LeaderCommit = rf.commitIndex
-	// 	aep := AppendEntriesReply{}
-	// 	// paper里，只要不没有响应就无限call
-	// 	for rf.killed() == false {
-	// 		// 不是leader或者term改变了的情况，应该在appendentry里面解决了，他只要返回结果，这边就结束了，所以没必要
-	// 		// if rf.serverState != leader || rf.CurrentTerm != aea.Term {
-	// 		// 	// 只有当不是leader的时候，才是失败吗
-	// 		// 	aep.Success = false
-	// 		// 	break
-	// 		// }
-
-	// 		Debug(dLog, "S%v leader -> peer:%v log.idx:%v log.term:%v [Start]", rf.me, idx, aea.LogEntries.Index, aea.LogEntries.Term)
-	// 		go rf.sendAppendEntries(idx, &aea, &aep, nil)
-
-	// 		// if ok := rf.sendAppendEntries(idx, &aea, &aep, nil); !ok {
-	// 		// 	// 只有网络差，follower crash和follower慢才重传
-	// 		// 	time.Sleep(10 * time.Millisecond)
-	// 		// 	Debug(dLog, "S%v leader -> peer:%v retry log.idx:%v log.term:%v [Start]", rf.me, idx, aea.LogEntries.Index, aea.LogEntries.Term)
-	// 		// 	// continue
-	// 		// 	break
-	// 		// } else {
-	// 		// 	Debug(dLog, "S%v leader -> peer:%v log.idx:%v reply:%v XIndex:%v XTerm:%v [Start]", rf.me, idx, aea.LogEntries.Index, aep.Success, aep.XIndex, aep.XTerm)
-	// 		// 	if aep.Term > rf.CurrentTerm {
-	// 		// 		// 有可能leader disconnect了，当他终于连上外面的server，发现自己的term过期了
-	// 		// 		rf.serverState = follower
-	// 		// 		rf.CurrentTerm = aep.Term
-	// 		// 		rf.VotedFor = -1
-	// 		// 		rf.persist()
-	// 		// 		break
-	// 		// 	}
-	// 		// 	// 这里就处理好success和fail对leader的影响
-	// 		// 	if !aep.Success {
-	// 		// 		if aep.XTerm == -1 && aep.XIndex == -1 {
-	// 		// 			break
-	// 		// 		}
-	// 		// 		find_term := aep.XTerm
-	// 		// 		var isfind bool = false
-	// 		// 		rf.IndexMu.Lock()
-	// 		// 		for i := len(rf.log) - 1; i >= 0; i-- {
-	// 		// 			if find_term == rf.log[i].Term {
-	// 		// 				rf.nextIndex[idx] = int64(i + 1)
-	// 		// 				isfind = true
-	// 		// 				break
-	// 		// 			}
-	// 		// 		}
-	// 		// 		if isfind == false && aep.XTerm == -1 {
-	// 		// 			rf.nextIndex[idx] = aep.XIndex + 1
-	// 		// 		} else if isfind == false && aep.XTerm != -1 {
-	// 		// 			rf.nextIndex[idx] = aep.XIndex
-	// 		// 		}
-	// 		// 		rf.IndexMu.Unlock()
-	// 		// 		rf.consistent_checkMu.Lock()
-	// 		// 		if rf.isStartConsistentCheck[int64(idx)] == false {
-	// 		// 			go rf.consistent_check(int64(idx), aea.Term)
-	// 		// 			rf.isStartConsistentCheck[int64(idx)] = true
-	// 		// 		}
-	// 		// 		rf.consistent_checkMu.Unlock()
-	// 		// 	} else {
-	// 		// 		rf.IndexMu.Lock()
-	// 		// 		if rf.matchIndex[idx] < aea.LogEntries.Index {
-	// 		// 			rf.matchIndex[idx] = aea.LogEntries.Index
-	// 		// 		}
-	// 		// 		rf.nextIndex[idx] = rf.matchIndex[idx] + 1
-	// 		// 		rf.IndexMu.Unlock()
-	// 		// 		// rf.initMatchIndex[idx] = true
-	// 		// 	}
-	// 		// 	Debug(dLog, "S%v leader store peer:%v matchIndex:%v nextIndex:%v", rf.me, idx, rf.matchIndex[idx], rf.nextIndex[idx])
-	// 		// 	break
-	// 		// }
-	// 	}
-	// 	receiveRes <- AppendEntriesChan{Aep: aep, PeerNum: int64(idx)}
-	// }(idx, aea)
-	// }
-
-	// // 等待大多数peers收到，然后自己commit，处理
-	// go func(index int64) {
-	// 	var success_channel chan bool = make(chan bool)
-	// 	// 这个协程能够收到上面协程所有的输出，然后关闭channel，保证channel是close的
-	// 	go func() {
-	// 		success_num := 1 // 自己已经成功了
-	// 		is_send := false
-	// 		var set map[int64]bool = make(map[int64]bool)
-	// 		for res := range receiveRes {
-	// 			peer_num := res.PeerNum
-	// 			_, isAlready := set[peer_num]
-	// 			output := res.Aep.Success
-	// 			if output && !isAlready {
-	// 				success_num++
-	// 				set[peer_num] = true
-	// 			} else if !isAlready && !output {
-	// 				set[peer_num] = false
-	// 			}
-	// 			if success_num >= rf.majorityNum && !is_send {
-	// 				//这里应该是超过半数的success就可以break了。但是，后面close了管道，直接导致上面进程无法发送信息到管道内，导致错误
-	// 				success_channel <- true
-	// 				is_send = true
-	// 			}
-	// 			if len(set) == len(rf.peers)-1 {
-	// 				if is_send == false {
-	// 					success_channel <- false
-	// 				}
-	// 				close(receiveRes)
-	// 				break
-	// 			}
-	// 		}
-	// 	}()
-	// 	is_success := <-success_channel
-	// 	close(success_channel)
-	// 	// close(receiveRes)
-	// 	// 这里不去手动close掉，通过go的垃圾回收机制可以自己回收，因为没有goroutine被这个卡住，所有涉及到这个channel的协程都正常退出了，那么这个channel会自动被收回
-	// 	if is_success {
-	// 		if rf.commitIndex < index {
-	// 			rf.commitIndex = index
-	// 		}
-	// 		if rf.commitIndex > rf.lastApplied {
-	// 			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-	// 				apply_msg := ApplyMsg{}
-	// 				apply_msg.CommandValid = true
-	// 				apply_msg.Command = rf.log[i-1].Log
-	// 				apply_msg.CommandIndex = int(rf.log[i-1].Index)
-	// 				rf.apply_msg <- apply_msg
-	// 				Debug(dCommit, "S%v leader commit idx:%v cmd:%v [Start]", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
-	// 			}
-	// 			rf.lastApplied = rf.commitIndex
-	// 			rf.persist()
-	// 		}
-	// 	}
-	// }(int64(log_idx))
 
 	return log_idx, int(rf.CurrentTerm), rf.serverState == leader
 }
@@ -673,7 +531,7 @@ func (rf *Raft) ticker() {
 			voteTerm = rf.CurrentTerm
 			rf.VotedFor = int64(rf.me)
 			// atomic.AddInt64(&rf.collectVotes, 1)
-			rf.collectVotes = 1
+			collectVotes := 1
 			rf.persist()
 			rf.voteForMu.Unlock()
 
@@ -688,7 +546,7 @@ func (rf *Raft) ticker() {
 				peer int64
 				r    RequestVoteReply
 			}, len(rf.peers)-1)
-			timeout := time.NewTimer(waitTime)
+			timeout := time.NewTimer(waitTimeVote)
 			// sendRequestVote
 			for id := range rf.peers {
 				if id == rf.me {
@@ -720,12 +578,12 @@ func (rf *Raft) ticker() {
 				var set map[int64]bool = make(map[int64]bool)
 				for out := range requestVoteChan {
 					set[out.peer] = true
-					Debug(dVote, "S%v get reply from %v, ok:%v", rf.me, out.peer, out.ok)
+					Debug(dVote, "S%v get reply from %v, ok:%v [ticker]", rf.me, out.peer, out.ok)
 					if out.ok {
 						term := out.r.Term
 						if term <= voteTerm && out.r.VoteGranted {
-							rf.collectVotes += 1
-							Debug(dVote, "S%v get voted from %v in voteTerm:%v [ticker]", rf.me, out.peer, voteTerm)
+							collectVotes += 1
+							Debug(dVote, "S%v get voted from %v in voteTerm:%v currentTerm:%v [ticker]", rf.me, out.peer, voteTerm, rf.CurrentTerm)
 						} else if term > voteTerm {
 							if term > rf.CurrentTerm {
 								rf.voteForMu.Lock()
@@ -734,11 +592,11 @@ func (rf *Raft) ticker() {
 								rf.VotedFor = -1
 								rf.voteForMu.Unlock()
 							}
-							rf.collectVotes = 0
+							collectVotes = 0
 							rf.serverState = follower
 							return
 						}
-						if rf.collectVotes >= int64(rf.majorityNum) && !issend {
+						if collectVotes >= rf.majorityNum && !issend {
 							recieveVoteChan <- true
 							issend = true
 							close(recieveVoteChan)
@@ -757,15 +615,15 @@ func (rf *Raft) ticker() {
 			case <-recieveVoteChan:
 				timeout.Stop()
 			}
-			Debug(dVote, "S%v collectVotes:%v voteTerm:%v [ticker]", rf.me, rf.collectVotes, voteTerm)
+			Debug(dVote, "S%v collectVotes:%v voteTerm:%v [ticker]", rf.me, collectVotes, voteTerm)
 			// win election
 			// 想要成为leader，必须得经过win election，所以，只有这里能让一个server成为leader！
-			if rf.collectVotes >= int64(rf.majorityNum) {
+			if collectVotes >= rf.majorityNum && rf.CurrentTerm == voteTerm {
 				// heartbeat
 				// 当选的是voteTerm的leader
 				go rf.start_heartbeat(voteTerm)
 				rf.serverState = leader
-				rf.leaderAlive = 2
+				rf.leaderAlive = LeakBeat
 				rf.findLeader = rf.me
 				// 成为leader后，需要初始化一些变量	nextIndex  []int64 和 matchIndex []int64
 				// 假设append一个已存在的log的结果为true，幂等
@@ -773,6 +631,7 @@ func (rf *Raft) ticker() {
 				rf.matchIndex = make([]int64, len(rf.peers))
 				// rf.initMatchIndex = make([]bool, len(rf.peers))
 				rf.nextIndex = make([]int64, len(rf.peers))
+				rf.leaderLogMu.Lock()
 				for idx := range rf.peers {
 					// matchIndex 逻辑是已经commit的log的位置，所以当leader知道peer commit的位置的时候，需要调整
 					// nextIndex 逻辑是最大的可能复制的log的位置，所以当leader log的长度变化的时候需要考虑变化
@@ -782,11 +641,18 @@ func (rf *Raft) ticker() {
 						rf.nextIndex[idx] = int64(len(rf.log)) + 1
 						continue
 					}
+					// rf.consistent_checkMu.Lock()
+					// if rf.isStartConsistentCheck[int64(idx)] == false {
+					// 	go rf.consistent_check(int64(idx), voteTerm)
+					// 	rf.isStartConsistentCheck[int64(idx)] = true
+					// }
+					// rf.consistent_checkMu.Unlock()
 					rf.matchIndex[idx] = 0
 					// rf.initMatchIndex[idx] = false
 					rf.nextIndex[idx] = int64(len(rf.log)) + 1
 					Debug(dInfo, "S%v store nextIndex[%v]=%v [ticker]", rf.me, idx, rf.nextIndex[idx])
 				}
+				rf.leaderLogMu.Unlock()
 				// rf.Start("minzhy" + strconv.Itoa(int(rf.CurrentTerm))) // 3B lab这里要去掉，因为3 B会测试lab的index序列号，没预期会增加一个
 			} else {
 				rf.serverState = follower
@@ -794,7 +660,6 @@ func (rf *Raft) ticker() {
 			// EndVote:
 			// DPrintf("[ticker]::vote collection vote:%v", rf.collectVotes, "me", rf.me, "term", voteTerm)
 			// clear state
-			rf.collectVotes = 0
 		}
 		// 看看log里面都是什么，为什么选不出leader
 		if id := len(rf.log) - 1; id != -1 {
@@ -832,37 +697,14 @@ func (rf *Raft) start_heartbeat(voteTerm int64) {
 				aea.LeaderId = int64(rf.me)
 				aea.LeaderCommit = rf.commitIndex
 				aea.MatchIdx = rf.matchIndex[id]
-				aea.LogEntries = LogEntry{-1, -1, -1} // 心跳就是什么也不发送
+				// aea.LogEntries = LogEntry{-1, -1, -1} // 心跳就是什么也不发送
+				aea.LogEntries = make([]LogEntry, 0)
 				aea.PrevLogIndex = -1
 				aea.PrevLogTerm = -1
 				rf.leaderLogMu.Unlock()
 
+				Debug(dInfo, "S%v leader send heartbeat to %v term:%v [start_heartbeat]", rf.me, id, voteTerm)
 				go rf.heartbeat(id, &aea, &aep, sendHeartBeatChan)
-
-				// var ok bool = false
-				// select {
-				// case <-timeout.C:
-				// 	timeout.Stop()
-				// 	Debug(dLeader, "S%v leader -> heartbeat %v timeout [start_heartbeat]", rf.me, id)
-				// 	continue //这里continue是全跳了for后面的语句吗？select是没有continue的，所以是按照for的逻辑走的
-				// case ok = <-heartBeatChannel:
-				// 	timeout.Stop()
-				// }
-				// Debug(dLeader, "S%v leader -> heartbeat %v ok:%v success:%v [start_heartbeat]", rf.me, id, ok, aep.Success)
-				// if ok {
-				// 	if rf.matchIndex[id] < int64(len(rf.log)) {
-				// 		rf.consistent_checkMu.Lock()
-				// 		if rf.isStartConsistentCheck[int64(id)] == false {
-				// 			go rf.consistent_check(int64(id), aea.Term)
-				// 			rf.isStartConsistentCheck[int64(id)] = true
-				// 		}
-				// 		rf.consistent_checkMu.Unlock()
-				// 	}
-				// 	if aep.Term > voteTerm {
-				// 		rf.serverState = follower
-				// 		break
-				// 	}
-				// }
 			}
 			// 这个地方和request vote有一点不同，这里其实并不需要根据reply做太多的工作，所以这里可以直接go一个协程，回收chan就可以了
 			// 也不需要timeout
@@ -870,6 +712,7 @@ func (rf *Raft) start_heartbeat(voteTerm int64) {
 				var set = 0
 				for out := range sendHeartBeatChan {
 					set++
+					Debug(dInfo, "S%v leader recieve heartbeat from %v ok:%v [start_heartbeat]", rf.me, out.peer, out.ok)
 					if out.ok {
 						if rf.matchIndex[out.peer] < int64(len(rf.log)) {
 							rf.consistent_checkMu.Lock()
@@ -902,13 +745,13 @@ func (rf *Raft) check_leader() {
 	for rf.killed() == false {
 		// rf == killed?
 		if rf.serverState == leader {
-			rf.leaderAlive = 2
+			rf.leaderAlive = LeakBeat
 			rf.findLeader = rf.me
 			continue
 		}
 		Debug(dInfo, "S%v serverState:%v leaderAlive:%v findLeader:%v kill:%v [check_leader]", rf.me, rf.serverState, rf.leaderAlive, rf.findLeader, rf.killed())
 		rf.leaderAlive = rf.leaderAlive - 1 // 这个地方不能直接bool型，得用一个2，1，0的变量，因为这里直接false了，上面就又重新开始选举leader了！term就变了
-		if rf.leaderAlive < 0 {
+		if rf.leaderAlive <= 0 {
 			rf.findLeader = -1
 		}
 		time.Sleep(checkLeaderTime)
@@ -941,7 +784,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
-	rf.collectVotes = 0
 	rf.findLeader = -1
 	rf.leaderAlive = 0
 	rf.majorityNum = len(rf.peers)/2 + 1
@@ -949,6 +791,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	for id := range rf.peers {
 		rf.isStartConsistentCheck[int64(id)] = false
 	}
+	rf.IndexMu = make([]sync.Mutex, len(rf.peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -956,6 +799,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.check_leader()
+	go rf.commit_entries()
 
 	return rf
 }
@@ -989,7 +833,7 @@ type AppendEntriesArgs struct {
 	PrevLogIndex int64
 	PrevLogTerm  int64
 
-	LogEntries   LogEntry
+	LogEntries   []LogEntry
 	LeaderCommit int64
 
 	// my add
@@ -1020,7 +864,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if MatchIdx == 0 {
 		MatchIdx = rf.lastApplied
 	}
-	Debug(dInfo, "S%v term%v currentTerm:%v lastApplied:%v commitIndex:%v LeaderCommit:%v MatchIdx:%v Log.Index:%v Log.cmd:%v [AppendEntries]", rf.me, term, rf.CurrentTerm, rf.lastApplied, rf.commitIndex, LeaderCommit, MatchIdx, LogEntries.Index, LogEntries.Log)
+
+	if len(LogEntries) == 0 {
+		Debug(dInfo, "S%v term%v currentTerm:%v lastApplied:%v commitIndex:%v LeaderCommit:%v MatchIdx:%v Log.Index:%v Log.cmd:%v [AppendEntries]", rf.me, term, rf.CurrentTerm, rf.lastApplied, rf.commitIndex, LeaderCommit, MatchIdx, -1, -1)
+	} else {
+		Debug(dInfo, "S%v term%v currentTerm:%v lastApplied:%v commitIndex:%v LeaderCommit:%v MatchIdx:%v Log.Index:%v Log.cmd:%v prevLogIdx:%v prevLogTerm:%v len(log):%v[AppendEntries]", rf.me, term, rf.CurrentTerm, rf.lastApplied, rf.commitIndex, LeaderCommit, MatchIdx, LogEntries[0].Index, LogEntries[0].Log, PrevLogIndex, PrevLogTerm, len(LogEntries))
+	}
 	peer_log_idx := len(rf.log)
 
 	if term < rf.CurrentTerm {
@@ -1041,17 +890,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.CurrentTerm = term
 	rf.serverState = follower
 	rf.findLeader = int(leaderId)
-	rf.leaderAlive = 2
+	rf.leaderAlive = LeakBeat
 	reply.Term = term
 
-	rf.commitMu.Lock()
-	if LogEntries.Term == -1 && LogEntries.Index == -1 {
+	// rf.commitMu.Lock()
+	// if LogEntries.Term == -1 && LogEntries.Index == -1 {
+	if len(LogEntries) == 0 {
 		// 心跳是空的，所以这里可以直接reply success
 		reply.Success = true
 		// reply.AppliedIndex = rf.lastApplied
 	} else {
 		// 心跳不空
-		log_idx := LogEntries.Index
+		log_idx := LogEntries[0].Index
 		if log_idx > int64(len(rf.log))+1 {
 			// 太过超前
 			reply.Success = false
@@ -1059,40 +909,70 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			// rf.commitMu.Unlock()
 			reply.XIndex = int64(len(rf.log))
 			reply.XTerm = -1
-			rf.commitMu.Unlock()
+			// rf.commitMu.Unlock()
+			Debug(dClient, "in:%v", len(rf.log))
 			return
 		}
 
 		if PrevLogIndex == -1 && PrevLogTerm == -1 {
 			// check 的log是第一个log，一定成功
-			if len(rf.log) == 0 {
-				rf.log = append(rf.log, LogEntries)
-				reply.Success = true
-			} else {
-				rf.log[0] = LogEntries
-				reply.Success = true
+			// if len(rf.log) == 0 {
+			// 	// rf.log = append(rf.log, LogEntries...)
+			// 	rf.log = LogEntries
+			// 	reply.Success = true
+			// 	// } else {
+			// 	// 	rf.log[0] = LogEntries
+			// 	// 	reply.Success = true
+			// }
+			rf.log = LogEntries
+			if len(rf.log) <= len(LogEntries) {
+				rf.log = LogEntries
 			}
-			MatchIdx = 1
+			reply.Success = true
+			// MatchIdx = 1
+			MatchIdx = int64(len(LogEntries))
 		} else {
 			// PrevLogIndex很大，超出log范围的情况已经在log_idx > int64(peer_log_idx)+1去除了，所以prev_log一定存在
 			prev_log := rf.log[PrevLogIndex-1]
 			if PrevLogIndex == prev_log.Index && PrevLogTerm == prev_log.Term {
-				if log_idx == int64(len(rf.log))+1 {
-					// 用于append新的log
-					rf.log = append(rf.log, LogEntries)
-				} else {
-					// 检查的是原来的
-					rf.log[PrevLogIndex] = LogEntries
+				// if log_idx == int64(len(rf.log))+1 {
+				// 	// 用于append新的log
+				// 	rf.log = append(rf.log[:PrevLogIndex], LogEntries...)
+				// 	// } else {
+				// 	// 	// 检查的是原来的
+				// 	// 	rf.log[PrevLogIndex] = LogEntries
+				// }
+				// rf.log = append(rf.log[:PrevLogIndex], LogEntries...)
+
+				// 当RPC乱序进入，必须保证更新后的log是最长的那个，不然的话，后续进来的短的log，将整个log的长度变短，导致leader上记录的log match很长，但实际很短
+				// 不太能够直接这样判断，如果leader更换了，rf.log很长，但实际上的leader的log很短，那么这个leader的log就进不来了！要判断进来的log与原先的log是否相同！！！
+				// if len(rf.log) <= len(LogEntries)+int(PrevLogIndex) {
+				// 	for i := range LogEntries {
+				// 		if i+int(PrevLogIndex) > len(rf.log)-1 {
+				// 			rf.log = append(rf.log, LogEntries[i])
+				// 		} else {
+				// 			rf.log[i+int(PrevLogIndex)] = LogEntries[i]
+				// 		}
+				// 	}
+				// }
+				for i := range LogEntries {
+					if i+int(PrevLogIndex) > len(rf.log)-1 {
+						rf.log = append(rf.log, LogEntries[i])
+					} else {
+						rf.log[i+int(PrevLogIndex)] = LogEntries[i]
+					}
 				}
 				reply.Success = true
-				MatchIdx = PrevLogIndex + 1
+				// MatchIdx = PrevLogIndex + 1
+				MatchIdx = PrevLogIndex + int64(len(LogEntries))
 			} else {
 				reply.Success = false
+				Debug(dClient, "or")
 				reply.XTerm = prev_log.Term
 				for id := range rf.log {
 					if rf.log[id].Term == reply.XTerm {
 						reply.XIndex = rf.log[id].Index
-						rf.commitMu.Unlock()
+						// rf.commitMu.Unlock()
 						return
 					}
 				}
@@ -1115,19 +995,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitIndex = MatchIdx
 		}
 		// 这个放在LeaderCommit>commitIndex里面应该是没问题的，因为只有commitIndex变化的时候，才有可能applied，不然前面的早已经applied了
-		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			apply_msg := ApplyMsg{}
-			apply_msg.CommandValid = true
-			apply_msg.Command = rf.log[i-1].Log
-			apply_msg.CommandIndex = int(rf.log[i-1].Index)
-			rf.apply_msg <- apply_msg
-			Debug(dInfo, "S%v execute log entry idx:%v command%v commitIndex:%v [AppendEntries]", rf.me, int(rf.log[i-1].Index), apply_msg.Command, rf.commitIndex)
-		}
-		rf.lastApplied = rf.commitIndex
 		rf.persist()
 	}
 	// reply.AppliedIndex = rf.lastApplied
-	rf.commitMu.Unlock()
+	// rf.commitMu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, CC chan struct {
@@ -1169,7 +1040,8 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 			if index == 0 {
 				Debug(dLeader, "S%v leader index error rf.matchIndex[%v]:%v rf.commitIndex:%v len(rf.log):%v [consistent_check]", rf.me, peer, rf.matchIndex[peer], rf.commitIndex, len(rf.log))
 			}
-			aea.LogEntries = rf.log[index-1]
+			aea.LogEntries = make([]LogEntry, len(rf.log)-int(index)+1)
+			copy(aea.LogEntries, rf.log[index-1:])
 			if index == 1 {
 				// index == 1表示，需要确认的log index=1，而index=1是不存在前一个log的，所以前一个log也是天然相同
 				// -1表示不存在
@@ -1181,7 +1053,7 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 			}
 		}
 		rf.leaderLogMu.Unlock()
-		Debug(dLeader, "S%v leader send follower:%v Log.Index:%v [consistent_check]", rf.me, peer, aea.LogEntries.Index)
+		Debug(dLeader, "S%v leader send follower:%v Log.Index:%v Log.cmd:%v len(log):%v[consistent_check]", rf.me, peer, aea.LogEntries[0].Index, aea.LogEntries[0].Log, len(aea.LogEntries))
 
 		var sendEntry chan struct {
 			ok   bool
@@ -1192,7 +1064,7 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 			peer int64
 			r    AppendEntriesReply
 		})
-		timeout := time.NewTimer(waitTime)
+		timeout := time.NewTimer(waitTimeCheck)
 		go rf.sendAppendEntries(int(peer), &aea, &aep, sendEntry)
 
 		// 处理RPC
@@ -1201,24 +1073,32 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 			continue
 		case out := <-sendEntry:
 			if out.ok {
+				aep = out.r
 				if aep.Term > voteTerm {
 					rf.serverState = follower
 					break
 				}
+				Debug(dInfo, "S%v peer:%v aep.success:%v Log.Index:%v Log.cmd:%v len(log):%v", rf.me, peer, aep.Success, aea.LogEntries[0].Index, aea.LogEntries[0].Log, len(aea.LogEntries))
 				if aep.Success {
-					rf.IndexMu.Lock()
-					if rf.matchIndex[peer] < aea.LogEntries.Index {
-						rf.matchIndex[peer] = aea.LogEntries.Index
+					rf.IndexMu[out.peer].Lock()
+					if rf.matchIndex[peer] < aea.LogEntries[len(aea.LogEntries)-1].Index {
+						Debug(dClient, "len:%v", len(aea.LogEntries))
+						rf.matchIndex[peer] = aea.LogEntries[len(aea.LogEntries)-1].Index
 					}
 					rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-					rf.IndexMu.Unlock()
+					rf.IndexMu[out.peer].Unlock()
 				} else {
 					if aep.XTerm == -1 && aep.XIndex == -1 {
 						break
 					}
+					// 这里的意思应该是，如果matchIndex是初始化过的，那么其实就可以直接给nextIndex了，不需要再去看Xterm和Xindex了！不然容易错
+					if rf.matchIndex[peer] != 0 {
+						rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+						continue
+					}
 					find_term := aep.XTerm
 					var isfind bool = false
-					rf.IndexMu.Lock()
+					rf.IndexMu[out.peer].Lock()
 					for i := len(rf.log) - 1; i >= 0; i-- {
 						if find_term == rf.log[i].Term {
 							rf.nextIndex[peer] = int64(i + 1)
@@ -1231,209 +1111,54 @@ func (rf *Raft) consistent_check(peer int64, voteTerm int64) {
 					} else if isfind == false && aep.XTerm != -1 {
 						rf.nextIndex[peer] = aep.XIndex
 					}
-					rf.IndexMu.Unlock()
+					rf.IndexMu[out.peer].Unlock()
 				}
-				Debug(dLeader, "S%v matchIndex:%v nextIndex:%v [consistent_check]", rf.me, rf.matchIndex[peer], rf.nextIndex[peer])
-				var sort_array []int64
-				sort_array = make([]int64, 0)
-				for id := range rf.matchIndex {
-					if rf.me == id {
-						continue
-					}
-					sort_array = append(sort_array, rf.matchIndex[id])
-				}
-				sort.SliceStable(sort_array, func(i, j int) bool {
-					return sort_array[i] < sort_array[j]
-				})
-				min_match_idx := sort_array[rf.majorityNum-1]
-				Debug(dLeader, "S%v leader min_match_idx:%v [consistent_check]", rf.me, min_match_idx)
-				if min_match_idx > rf.commitIndex && rf.log[min_match_idx-1].Term == rf.CurrentTerm {
-					// commitIndex 变大之后，要执行command才行
-					rf.commitIndex = min_match_idx
-					if rf.commitIndex > rf.lastApplied {
-						for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-							apply_msg := ApplyMsg{}
-							apply_msg.CommandValid = true
-							apply_msg.Command = rf.log[i-1].Log
-							apply_msg.CommandIndex = int(rf.log[i-1].Index)
-							rf.apply_msg <- apply_msg
-							Debug(dLeader, "S%v commit idx:%v cmd:%v [consistent_check]", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
+				Debug(dLeader, "S%v peer:%v matchIndex:%v nextIndex:%v [consistent_check]", rf.me, peer, rf.matchIndex[peer], rf.nextIndex[peer])
+				go func() {
+					var sort_array []int64
+					sort_array = make([]int64, 0)
+					for id := range rf.matchIndex {
+						if rf.me == id {
+							continue
 						}
-						rf.lastApplied = rf.commitIndex
+						sort_array = append(sort_array, rf.matchIndex[id])
+					}
+					sort.SliceStable(sort_array, func(i, j int) bool {
+						return sort_array[i] < sort_array[j]
+					})
+					min_match_idx := sort_array[rf.majorityNum-1]
+					Debug(dLeader, "S%v leader min_match_idx:%v [consistent_check]", rf.me, min_match_idx)
+					rf.leaderLogMu.Lock()
+					if min_match_idx > rf.commitIndex && rf.log[min_match_idx-1].Term == rf.CurrentTerm {
+						// commitIndex 变大之后，要执行command才行
+						rf.commitIndex = min_match_idx
 						// 这里是否存在可能，当commit结束后，persist还没开始前，就已经crash了，那么persist记录的commit位置就不准确了
 						rf.persist()
 					}
-				}
+					rf.leaderLogMu.Unlock()
+				}()
 			}
 		}
+		// time.Sleep(consistent_checkTime)
 	}
-	for idx := range rf.peers {
-		if idx == rf.me {
-			continue
-		}
-		Debug(dInfo, "S%v leader match_index:%v next_index:%v follow:%v [consistent_check]", rf.me, rf.matchIndex[idx], rf.nextIndex[idx], idx)
-	}
-	time.Sleep(consistent_checkTime)
 
 	rf.consistent_checkMu.Lock()
 	rf.isStartConsistentCheck[int64(peer)] = false
 	rf.consistent_checkMu.Unlock()
-	// for rf.killed() == false {
-	// 	if rf.serverState != leader {
-	// 		break
-	// 	}
-	// 	// finish_check := false
-	// 	// 这里需要判断log的长度，所以需要枷锁
-	// 	rf.leaderLogMu.Lock()
-	// 	aea := AppendEntriesArgs{}
-	// 	aep := AppendEntriesReply{}
-	// 	aea.Term = voteTerm
-	// 	aea.LeaderId = int64(rf.me)
-	// 	aea.LeaderCommit = rf.commitIndex
-	// 	var index int64
-	// 	// matchIndex == 0不仅有可能是初始状态，同时也有可能是，确实一个都不match。所以这里还需要一个初始化参数，区分这两种情况
-	// 	// if rf.initMatchIndex[peer] == true {
-	// 	// 	index = rf.matchIndex[peer] + 1
-	// 	// } else {
-	// 	// 	index = int64(len(rf.log))
-	// 	// }
-	// 	index = rf.nextIndex[peer]
-	// 	aea.MatchIdx = rf.matchIndex[peer]
-	// 	// 这里的逻辑应该是：leader没有复制的log，或者已经确定最新复制的log已经一致就不需要检查了
-	// 	if len(rf.log) == 0 || index > int64(len(rf.log)) {
-	// 		// 当leader没有log或者next index 已经超出了leader log的长度
-	// 		rf.leaderLogMu.Unlock()
-	// 		break
-	// 	} else {
-	// 		if index == 0 {
-	// 			Debug(dLeader, "S%v leader index error rf.matchIndex[%v]:%v rf.commitIndex:%v len(rf.log):%v [consistent_check]", rf.me, peer, rf.matchIndex[peer], rf.commitIndex, len(rf.log))
-	// 		}
-	// 		aea.LogEntries = rf.log[index-1]
-	// 		if index == 1 {
-	// 			// index == 1表示，需要确认的log index=1，而index=1是不存在前一个log的，所以前一个log也是天然相同
-	// 			// -1表示不存在
-	// 			aea.PrevLogIndex = -1
-	// 			aea.PrevLogTerm = -1
-	// 		} else {
-	// 			aea.PrevLogIndex = rf.log[index-2].Index
-	// 			aea.PrevLogTerm = rf.log[index-2].Term
-	// 		}
-	// 	}
-	// 	rf.leaderLogMu.Unlock()
-	// 	// timeout := time.NewTimer(waitTime * 2)
-	// 	// var consistent_check_channel chan bool
-	// 	Debug(dLeader, "S%v leader send follower:%v Log.Index:%v [consistent_check]", rf.me, peer, aea.LogEntries.Index)
+}
 
-	// 	// todo：这个地方需要设置短时间内的重传，如果没有收到ok，快速重传，不然如果unreliable的环境下，很容易超时
-	// 	// 重新改写
-	// 	ok := rf.sendAppendEntries(int(peer), &aea, &aep, nil)
-
-	// 	if ok {
-	// 		if aep.Term > voteTerm {
-	// 			rf.serverState = follower
-	// 			break
-	// 		}
-	// 		// rf.initMatchIndex[peer] = true
-	// 		if aep.Success {
-	// 			// next index 是对的，所以matchIndex 就是nextIndex-1
-	// 			// rf.matchIndex[id] = rf.nextIndex[id] - 1
-	// 			// rf.nextIndex[id]++
-	// 			// rf.matchIndex[id] = rf.nextIndex[id] - 1
-	// 			// 这里不应该用自加自减，应该用输入去判断nextIndex和matchIndex到哪了，因为这个是成功的了
-	// 			rf.IndexMu.Lock()
-	// 			if rf.matchIndex[peer] < aea.LogEntries.Index {
-	// 				rf.matchIndex[peer] = aea.LogEntries.Index
-	// 			}
-	// 			rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-	// 			rf.IndexMu.Unlock()
-	// 			// if rf.matchIndex[peer] == int64(len(rf.log)) {
-	// 			// 	finish_check = true
-	// 			// }
-	// 			// rf.nextIndex[id] = aea.LogEntries.Index + 1
-	// 		} else {
-	// 			// if rf.matchIndex[peer] < aep.AppliedIndex {
-	// 			// 	rf.matchIndex[peer] = aep.AppliedIndex
-	// 			// }
-	// 			if aep.XTerm == -1 && aep.XIndex == -1 {
-	// 				break
-	// 			}
-	// 			find_term := aep.XTerm
-	// 			var isfind bool = false
-	// 			rf.IndexMu.Lock()
-	// 			for i := len(rf.log) - 1; i >= 0; i-- {
-	// 				if find_term == rf.log[i].Term {
-	// 					rf.nextIndex[peer] = int64(i + 1)
-	// 					isfind = true
-	// 					break
-	// 				}
-	// 			}
-	// 			if isfind == false && aep.XTerm == -1 {
-	// 				rf.nextIndex[peer] = aep.XIndex + 1
-	// 			} else if isfind == false && aep.XTerm != -1 {
-	// 				rf.nextIndex[peer] = aep.XIndex
-	// 			}
-	// 			rf.IndexMu.Unlock()
-	// 		}
-	// 		Debug(dLeader, "S%v matchIndex:%v nextIndex:%v [consistent_check]", rf.me, rf.matchIndex[peer], rf.nextIndex[peer])
-	// 		// todo 这里其实不用取到最小的match，取到第majornum小的就行了。
-	// 		// 比如：5台机器，3台机器相同，即第二小的match idx就能执行了
-	// 		// min_match_idx := int64(len(rf.log))
-	// 		// for idx := range rf.peers {
-	// 		// 	if rf.me == idx {
-	// 		// 		continue
-	// 		// 	}
-	// 		// 	if min_match_idx > rf.matchIndex[idx] {
-	// 		// 		min_match_idx = rf.matchIndex[idx]
-	// 		// 	}
-	// 		// }
-	// 		var sort_array []int64
-	// 		sort_array = make([]int64, 0)
-	// 		for id := range rf.matchIndex {
-	// 			if rf.me == id {
-	// 				continue
-	// 			}
-	// 			sort_array = append(sort_array, rf.matchIndex[id])
-	// 		}
-	// 		sort.SliceStable(sort_array, func(i, j int) bool {
-	// 			return sort_array[i] < sort_array[j]
-	// 		})
-	// 		min_match_idx := sort_array[rf.majorityNum-1]
-	// 		Debug(dLeader, "S%v leader min_match_idx:%v [consistent_check]", rf.me, min_match_idx)
-	// 		// if min_match_idx != 0 {
-	// 		// 	DPrintf("[consistent_check]::min log.term:%v rf.currentterm:%v", rf.log[min_match_idx-1].Term, rf.CurrentTerm)
-	// 		// 	Debug(dLeader, "S%v commit idx:%v cmd:%v [consistent_check]", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
-	// 		// }
-	// 		if min_match_idx > rf.commitIndex && rf.log[min_match_idx-1].Term == rf.CurrentTerm {
-	// 			// commitIndex 变大之后，要执行command才行
-	// 			rf.commitIndex = min_match_idx
-	// 			if rf.commitIndex > rf.lastApplied {
-	// 				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-	// 					apply_msg := ApplyMsg{}
-	// 					apply_msg.CommandValid = true
-	// 					apply_msg.Command = rf.log[i-1].Log
-	// 					apply_msg.CommandIndex = int(rf.log[i-1].Index)
-	// 					rf.apply_msg <- apply_msg
-	// 					Debug(dLeader, "S%v commit idx:%v cmd:%v [consistent_check]", rf.me, int(rf.log[i-1].Index), rf.log[i-1].Log)
-	// 				}
-	// 				rf.lastApplied = rf.commitIndex
-	// 				// 这里是否存在可能，当commit结束后，persist还没开始前，就已经crash了，那么persist记录的commit位置就不准确了
-	// 				rf.persist()
-	// 			}
-	// 		}
-	// 	}
-	// 	// if finish_check {
-	// 	// 	break
-	// 	// }
-
-	// 	for idx := range rf.peers {
-	// 		if idx == rf.me {
-	// 			continue
-	// 		}
-	// 		Debug(dInfo, "S%v leader match_index:%v follow:%v [consistent_check]", rf.me, rf.matchIndex[idx], idx)
-	// 	}
-	// 	time.Sleep(consistent_checkTime)
-	// }
-	// rf.consistent_checkMu.Lock()
-	// rf.isStartConsistentCheck[int64(peer)] = false
-	// rf.consistent_checkMu.Unlock()
+func (rf *Raft) commit_entries() {
+	for !rf.killed() {
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			apply_msg := ApplyMsg{}
+			apply_msg.CommandValid = true
+			apply_msg.Command = rf.log[i-1].Log
+			apply_msg.CommandIndex = int(rf.log[i-1].Index)
+			rf.apply_msg <- apply_msg
+			Debug(dInfo, "S%v execute log entry idx:%v command%v commitIndex:%v [commit_entries]", rf.me, int(rf.log[i-1].Index), apply_msg.Command, rf.commitIndex)
+		}
+		rf.lastApplied = rf.commitIndex
+		rf.persist()
+		time.Sleep(waitTimeCommit)
+	}
 }
