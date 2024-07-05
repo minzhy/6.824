@@ -1140,6 +1140,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	leader1 := cfg.checkOneLeader()
 
 	for i := 0; i < iters; i++ {
+		fmt.Println("iters:", i)
 		victim := (leader1 + 1) % servers
 		sender := leader1
 		if i%3 == 1 {
@@ -1148,10 +1149,12 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		}
 
 		if disconnect {
+			fmt.Println("disconnect", victim)
 			cfg.disconnect(victim)
 			cfg.one(rand.Int(), servers-1, true)
 		}
 		if crash {
+			fmt.Println("crash", victim)
 			cfg.crash1(victim)
 			cfg.one(rand.Int(), servers-1, true)
 		}
@@ -1160,7 +1163,10 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
 		for i := 0; i < nn; i++ {
 			cfg.rafts[sender].Start(rand.Int())
+			time.Sleep(1)
 		}
+
+		fmt.Println("middle")
 
 		// let applier threads catch up with the Start()'s
 		if disconnect == false && crash == false {
@@ -1227,6 +1233,7 @@ func TestSnapshotAllCrash3D(t *testing.T) {
 	cfg.one(rand.Int(), servers, true)
 
 	for i := 0; i < iters; i++ {
+		fmt.Println("iters:", i)
 		// perhaps enough to get a snapshot
 		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
 		for i := 0; i < nn; i++ {
