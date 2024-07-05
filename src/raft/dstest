@@ -249,3 +249,15 @@ def run_tests(
 
 if __name__ == "__main__":
     typer.run(run_tests)
+
+# 3A
+# TestInitialElection3A TestReElection3A TestManyElections3A
+
+# 3B
+# dstest TestBasicAgree3B TestRPCBytes3B TestFollowerFailure3B TestLeaderFailure3B TestFailAgree3B TestFailNoAgree3B TestConcurrentStarts3B TestRejoin3B TestBackup3B TestCount3B
+
+# 3C
+# TestPersist13C TestPersist23C TestPersist33C TestFigure83C TestUnreliableAgree3C TestFigure8Unreliable3C TestReliableChurn3C TestUnreliableChurn3C
+
+# 3D
+# TestSnapshotBasic3D TestSnapshotInstall3D TestSnapshotInstall3D TestSnapshotInstallCrash3D TestSnapshotInstallUnCrash3D TestSnapshotAllCrash3D TestSnapshotInit3D
